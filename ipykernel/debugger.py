@@ -40,6 +40,12 @@ except Exception as e:
     else:
         raise e
 
+def to_unix(path: str) -> str:
+    return path.replace("\\", "/")
+
+def to_windows(path: str) -> str:
+    return path.replace("/", "\\")
+
 
 # Required for backwards compatibility
 ROUTING_ID = getattr(zmq, "ROUTING_ID", None) or zmq.IDENTITY
@@ -457,7 +463,7 @@ class Debugger:
 
         with open(file_name, "w", encoding="utf-8") as f:
             f.write(code)
-
+        file_name = to_windows(file_name)
         return {
             "type": "response",
             "request_seq": message["seq"],
@@ -469,6 +475,8 @@ class Debugger:
     async def setBreakpoints(self, message):
         """Handle a set breakpoints message."""
         source = message["arguments"]["source"]["path"]
+        native_source_path = to_unix(source)
+        message["arguments"]["source"]["path"] = native_source_path
         self.breakpoint_list[source] = message["arguments"]["breakpoints"]
         message_response = await self._forward_message(message)
         # debugpy can set breakpoints on different lines than the ones requested,
@@ -478,6 +486,8 @@ class Debugger:
                 {"line": breakpoint["line"]}
                 for breakpoint in message_response["body"]["breakpoints"]
             ]
+        for bp in message_response["body"]["breakpoints"]:
+            bp['source']['path'] = to_windows(bp['source']['path'])
         return message_response
 
     async def source(self, message):
@@ -515,6 +525,10 @@ class Debugger:
             reply["body"]["stackFrames"] = reply["body"]["stackFrames"][: module_idx + 1]
         except StopIteration:
             pass
+
+        for sf in reply["body"]['stackFrames']:
+            current_path = sf['source']['path']
+            sf['source']['path'] = to_windows(current_path)
         return reply
 
     def accept_variable(self, variable_name):
@@ -709,7 +723,6 @@ class Debugger:
     async def process_request(self, message):
         """Process a request."""
         reply = {}
-
         if message["command"] == "initialize":
             if self.is_started:
                 self.log.info("The debugger has already started")
@@ -742,5 +755,4 @@ class Debugger:
             self.stopped_threads = set()
             self.is_started = False
             self.log.info("The debugger has stopped")
-
         return reply

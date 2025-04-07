@@ -362,6 +362,7 @@ class Debugger:
         self.endpoint = None
 
         self.variable_explorer = VariableExplorer()
+        self._idx = 0
 
     def _handle_event(self, msg):
         if msg["event"] == "stopped":
@@ -528,7 +529,8 @@ class Debugger:
 
         for sf in reply["body"]['stackFrames']:
             current_path = sf['source']['path']
-            sf['source']['path'] = to_windows(current_path)
+            if current_path.startswith('/tmp/'):
+                sf['source']['path'] = to_windows(current_path)
         return reply
 
     def accept_variable(self, variable_name):
@@ -613,7 +615,7 @@ class Debugger:
                 "isStarted": self.is_started,
                 "hashMethod": "Murmur2",
                 "hashSeed": get_tmp_hash_seed(),
-                "tmpFilePrefix": get_tmp_directory() + os.sep,
+                "tmpFilePrefix": to_windows(get_tmp_directory() + os.sep),
                 "tmpFileSuffix": ".py",
                 "breakpoints": breakpoint_list,
                 "stoppedThreads": list(self.stopped_threads),
@@ -716,7 +718,7 @@ class Debugger:
             module = modules[i]
             filename = getattr(getattr(module, "__spec__", None), "origin", None)
             if filename and filename.endswith(".py"):
-                mods.append({"id": i, "name": module.__name__, "path": filename})
+                mods.append({"id": i, "name": module.__name__, "path": to_windows(filename)})
 
         return {"body": {"modules": mods, "totalModules": len(modules)}}
 
@@ -755,4 +757,5 @@ class Debugger:
             self.stopped_threads = set()
             self.is_started = False
             self.log.info("The debugger has stopped")
+        self._idx += 1
         return reply

@@ -1,5 +1,6 @@
 """Debugger implementation for the IPython kernel."""
 import os
+import platform
 import re
 import sys
 import typing as t
@@ -11,6 +12,8 @@ from IPython.core.inputtransformer2 import leading_empty_lines
 from tornado.locks import Event
 from tornado.queues import Queue
 from zmq.utils import jsonapi
+
+from .pathutil import detect_os_from_file_uri
 
 try:
     from jupyter_client.jsonutil import json_default
@@ -40,16 +43,23 @@ except Exception as e:
     else:
         raise e
 
-def to_unix(path: str) -> str:
-    return path.replace("\\", "/")
-
-def to_windows(path: str) -> str:
-    return path.replace("/", "\\")
 
 
 # Required for backwards compatibility
 ROUTING_ID = getattr(zmq, "ROUTING_ID", None) or zmq.IDENTITY
 
+NEED_PATCH_DEBUG_PATH = False
+KERNEL_OS = platform.system()
+
+def to_unix(path: str) -> str:
+    if NEED_PATCH_DEBUG_PATH:
+        return path.replace("\\", "/")
+    return path
+
+def to_windows(path: str) -> str:
+    if NEED_PATCH_DEBUG_PATH:
+        return path.replace("/", "\\")
+    return path
 
 class _FakeCode:
     """Fake code class."""
@@ -362,7 +372,6 @@ class Debugger:
         self.endpoint = None
 
         self.variable_explorer = VariableExplorer()
-        self._idx = 0
 
     def _handle_event(self, msg):
         if msg["event"] == "stopped":
@@ -740,6 +749,13 @@ class Debugger:
                         "success": False,
                         "type": "response",
                     }
+        if message["command"] == "attach":
+            arguments = message.get("arguments", {})
+            notebook_uri = arguments.get("__notebookUri", None)
+            if notebook_uri:
+                client_os = detect_os_from_file_uri(notebook_uri)
+                global NEED_PATCH_DEBUG_PATH
+                NEED_PATCH_DEBUG_PATH = client_os != KERNEL_OS
 
         handler = self.static_debug_handlers.get(message["command"], None)
         if handler is not None:
@@ -757,5 +773,4 @@ class Debugger:
             self.stopped_threads = set()
             self.is_started = False
             self.log.info("The debugger has stopped")
-        self._idx += 1
         return reply

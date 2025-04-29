@@ -1,5 +1,6 @@
 """Debugger implementation for the IPython kernel."""
 import os
+import platform
 import re
 import sys
 import typing as t
@@ -11,6 +12,8 @@ from IPython.core.inputtransformer2 import leading_empty_lines
 from tornado.locks import Event
 from tornado.queues import Queue
 from zmq.utils import jsonapi
+
+from .pathutil import detect_os_from_file_uri
 
 try:
     from jupyter_client.jsonutil import json_default
@@ -43,6 +46,21 @@ except Exception as e:
 
 # Required for backwards compatibility
 ROUTING_ID = getattr(zmq, "ROUTING_ID", None) or zmq.IDENTITY
+
+NEED_PATCH_DEBUG_PATH = False
+KERNEL_OS = platform.system()
+
+
+def to_unix(path: str) -> str:
+    if NEED_PATCH_DEBUG_PATH:
+        return path.replace("\\", "/")
+    return path
+
+
+def to_windows(path: str) -> str:
+    if NEED_PATCH_DEBUG_PATH:
+        return path.replace("/", "\\")
+    return path
 
 
 class _FakeCode:
@@ -457,7 +475,7 @@ class Debugger:
 
         with open(file_name, "w", encoding="utf-8") as f:
             f.write(code)
-
+        file_name = to_windows(file_name)
         return {
             "type": "response",
             "request_seq": message["seq"],
@@ -469,6 +487,8 @@ class Debugger:
     async def setBreakpoints(self, message):
         """Handle a set breakpoints message."""
         source = message["arguments"]["source"]["path"]
+        native_source_path = to_unix(source)
+        message["arguments"]["source"]["path"] = native_source_path
         self.breakpoint_list[source] = message["arguments"]["breakpoints"]
         message_response = await self._forward_message(message)
         # debugpy can set breakpoints on different lines than the ones requested,
@@ -478,6 +498,8 @@ class Debugger:
                 {"line": breakpoint["line"]}
                 for breakpoint in message_response["body"]["breakpoints"]
             ]
+        for bp in message_response["body"]["breakpoints"]:
+            bp["source"]["path"] = to_windows(bp["source"]["path"])
         return message_response
 
     async def source(self, message):
@@ -515,6 +537,10 @@ class Debugger:
             reply["body"]["stackFrames"] = reply["body"]["stackFrames"][: module_idx + 1]
         except StopIteration:
             pass
+
+        for sf in reply["body"]["stackFrames"]:
+            current_path = sf["source"]["path"]
+            sf["source"]["path"] = to_windows(current_path)
         return reply
 
     def accept_variable(self, variable_name):
@@ -702,14 +728,13 @@ class Debugger:
             module = modules[i]
             filename = getattr(getattr(module, "__spec__", None), "origin", None)
             if filename and filename.endswith(".py"):
-                mods.append({"id": i, "name": module.__name__, "path": filename})
+                mods.append({"id": i, "name": module.__name__, "path": to_windows(filename)})
 
         return {"body": {"modules": mods, "totalModules": len(modules)}}
 
     async def process_request(self, message):
         """Process a request."""
         reply = {}
-
         if message["command"] == "initialize":
             if self.is_started:
                 self.log.info("The debugger has already started")
@@ -725,6 +750,13 @@ class Debugger:
                         "success": False,
                         "type": "response",
                     }
+        if message["command"] == "attach":
+            arguments = message.get("arguments", {})
+            notebook_uri = arguments.get("__notebookUri", None)
+            if notebook_uri:
+                client_os = detect_os_from_file_uri(notebook_uri)
+                global NEED_PATCH_DEBUG_PATH  # noqa: PLW0603
+                NEED_PATCH_DEBUG_PATH = client_os != KERNEL_OS
 
         handler = self.static_debug_handlers.get(message["command"], None)
         if handler is not None:
@@ -742,5 +774,4 @@ class Debugger:
             self.stopped_threads = set()
             self.is_started = False
             self.log.info("The debugger has stopped")
-
         return reply
